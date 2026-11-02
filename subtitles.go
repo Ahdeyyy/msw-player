@@ -18,6 +18,7 @@ type mediaTrack struct {
 	External        bool   `json:"external"`
 	Forced          bool   `json:"forced"`
 	HearingImpaired bool   `json:"hearing-impaired"`
+	Codec           string `json:"codec"`
 }
 
 func trackID(data []byte) string {
@@ -51,7 +52,11 @@ func (t mediaTrack) label() string {
 		parts = append(parts, t.Lang)
 	}
 	if len(parts) == 0 {
-		parts = append(parts, "Subtitle")
+		label := "Subtitle"
+		if t.Type == "audio" {
+			label = "Audio track"
+		}
+		parts = append(parts, label)
 	}
 	if t.Forced {
 		parts = append(parts, "forced")

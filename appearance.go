@@ -62,6 +62,7 @@ func (a *app) theme() *ui.Theme {
 
 var icons = func() map[string]*ui.SVG {
 	paths := map[string]string{
+		"chapters": `<path d="M9 5h12M9 12h12M9 19h12"/><path d="m2 3 4 2-4 2zm0 7 4 2-4 2zm0 7 4 2-4 2z"/>`,
 		"settings": `<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="8" cy="18" r="2" fill="currentColor"/>`,
 		"refresh":  `<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.1 7a8 8 0 0 1 13.2-2L20 7M4 17l1.7 2A8 8 0 0 0 19 17"/>`,
 		"more":     `<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>`,

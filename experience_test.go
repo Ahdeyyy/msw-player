@@ -156,7 +156,7 @@ func TestAppearanceDensityAndHistoryPersistence(t *testing.T) {
 		t.Fatal("dark palette is tinted")
 	}
 	a.page = "settings"
-	tt := ui.NewTester(a.view, 1120, 760)
+	tt := ui.NewTester(a.settingsWindowView, 1120, 760)
 	if err := tt.Click("Compact"); err != nil {
 		t.Fatal(err)
 	}

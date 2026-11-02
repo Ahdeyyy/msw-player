@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
 	"github.com/egoist/mygo/ui"
+	"image"
 	"math"
 	"os"
 	"os/exec"
@@ -62,6 +64,7 @@ type thumbnail struct {
 	handle   ui.Handle
 	position float64
 	pending  bool
+	retryAt  time.Time
 	used     uint64
 }
 type thumbnailJob struct {
@@ -96,6 +99,9 @@ func (a *app) startThumbnailWorker() {
 					}
 					job.entry.pending = false
 					job.entry.image = bitmap
+					if bitmap == nil {
+						job.entry.retryAt = time.Now().Add(30 * time.Second)
+					}
 				})
 			}
 		}
@@ -110,13 +116,12 @@ func (a *app) thumbnailFor(path string) *thumbnail {
 	if entry == nil || entry.position != position {
 		entry = &thumbnail{position: position}
 		a.thumbs[path] = entry
-		if a.thumbJobs != nil {
-			select {
-			case a.thumbJobs <- thumbnailJob{path, position, entry}:
-				entry.pending = true
-			default:
-				delete(a.thumbs, path)
-			}
+	}
+	if entry.image == nil && !entry.pending && !time.Now().Before(entry.retryAt) && a.thumbJobs != nil {
+		select {
+		case a.thumbJobs <- thumbnailJob{path, position, entry}:
+			entry.pending = true
+		default:
 		}
 	}
 	a.thumbClock++
@@ -125,7 +130,7 @@ func (a *app) thumbnailFor(path string) *thumbnail {
 		var oldest string
 		stamp := ^uint64(0)
 		for key, value := range a.thumbs {
-			if key != path && value.used < stamp {
+			if key != path && !value.pending && value.used < stamp {
 				oldest, stamp = key, value.used
 			}
 		}
@@ -139,11 +144,16 @@ func extractThumbnail(ctx context.Context, cacheDir, path string, position float
 		return nil, err
 	}
 	prefix := fmt.Sprintf("%x", sha256.Sum256([]byte(historyKey(path))))[:24]
-	signature := fmt.Sprintf("%s:%d:%d:%.3f", path, info.Size(), info.ModTime().UnixNano(), position)
+	// Invalidate the old opening-frame previews, which are often black.
+	signature := fmt.Sprintf("preview-v2:%s:%d:%d:%.3f", path, info.Size(), info.ModTime().UnixNano(), position)
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(signature)))[:24]
 	destination := filepath.Join(cacheDir, prefix+"-"+key+".jpg")
 	if b, err := os.ReadFile(destination); err == nil {
-		return b, nil
+		if _, err := thumbnailBrightness(b); err == nil {
+			return b, nil
+		}
+		// Regenerate a truncated or damaged cache entry.
+		_ = os.Remove(destination)
 	}
 	if err = os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, err
@@ -159,21 +169,54 @@ func extractThumbnail(ctx context.Context, cacheDir, path string, position float
 	}
 	jobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(jobCtx, mpv, "--no-config", "--no-terminal", "--no-audio", "--sid=no", "--no-osc", "--osd-level=0", "--vo=image", "--vo-image-format=jpg", "--vo-image-outdir="+temp, "--frames=1", "--hr-seek=yes", fmt.Sprintf("--start=%.3f", position), "--vf=lavfi=[scale=480:-2]", "--", path)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("thumbnail: %w: %s", err, output)
+	starts := []string{fmt.Sprintf("%.3f", position)}
+	if position == 0 {
+		starts = []string{"10%", "35%", "65%", "0"}
 	}
-	files, _ := filepath.Glob(filepath.Join(temp, "*.jpg"))
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no video frame")
+	var data []byte
+	best := -1.0
+	var lastErr error
+	for _, start := range starts {
+		cmd := exec.CommandContext(jobCtx, mpv, "--no-config", "--no-terminal", "--no-audio", "--sid=no", "--no-osc", "--osd-level=0", "--vo=image", "--vo-image-format=jpg", "--vo-image-outdir="+temp, "--frames=1", "--hr-seek=yes", "--start="+start, "--vf=lavfi=[scale=480:-2]", "--", path)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if output, err := cmd.CombinedOutput(); err != nil {
+			lastErr = fmt.Errorf("thumbnail: %w: %s", err, output)
+			continue
+		}
+		files, _ := filepath.Glob(filepath.Join(temp, "*.jpg"))
+		if len(files) == 0 {
+			lastErr = fmt.Errorf("no video frame")
+			continue
+		}
+		frame, err := os.ReadFile(files[0])
+		_ = os.Remove(files[0])
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		brightness, err := thumbnailBrightness(frame)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if brightness > best {
+			data, best = frame, brightness
+		}
+		if position != 0 || brightness >= 8 {
+			break
+		}
 	}
-	data, err := os.ReadFile(files[0])
+	if data == nil {
+		return nil, lastErr
+	}
+	// Replace atomically so interrupted writes never become cached images.
+	staged := filepath.Join(temp, "preview.jpg")
+	if err = os.WriteFile(staged, data, 0600); err == nil {
+		err = os.Rename(staged, destination)
+	}
 	if err != nil {
-		return nil, err
-	}
-	if err = os.Rename(files[0], destination); err != nil {
-		return nil, err
+		// A read-only cache must not prevent the current preview from showing.
+		return data, nil
 	}
 	// One cached frame per source file, even as its saved position changes.
 	old, _ := filepath.Glob(filepath.Join(cacheDir, prefix+"-*.jpg"))
@@ -183,6 +226,26 @@ func extractThumbnail(ctx context.Context, cacheDir, path string, position float
 		}
 	}
 	return data, nil
+}
+
+func thumbnailBrightness(data []byte) (float64, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	bounds := img.Bounds()
+	var total, count float64
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
+			r, g, b, _ := img.At(x, y).RGBA()
+			total += (0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)) / 257
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("empty thumbnail")
+	}
+	return total / count, nil
 }
 
 func removeThumbnailTemp(cacheDir, temp string) {

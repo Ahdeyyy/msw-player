@@ -5,6 +5,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 func (a *app) view(c *ui.Context) {
@@ -18,6 +19,8 @@ func (a *app) view(c *ui.Context) {
 		c.OnShortcut(0, ui.KeyRight, func() { a.jump(5) })
 		c.OnShortcut(0, ui.KeyF, a.toggleFullscreen)
 		c.OnShortcut(0, ui.KeyM, func() { a.send("cycle", "mute") })
+		c.OnShortcut(0, ui.KeyPageUp, func() { a.stepChapter(-1) })
+		c.OnShortcut(0, ui.KeyPageDown, func() { a.stepChapter(1) })
 	}
 	c.OnShortcut(0, ui.KeyEscape, func() {
 		if a.fullscreen {
@@ -25,7 +28,10 @@ func (a *app) view(c *ui.Context) {
 		}
 	})
 	if a.fullscreen {
-		ui.Box(c).Fill().Background(ui.Hex("#000000"))
+		viewport := ui.Box(c).Label("Video player").Fill().Background(ui.Hex("#000000"))
+		if viewport.DoubleClicked() {
+			a.toggleFullscreen()
+		}
 		return
 	}
 	ui.Column(c).Fill().Children(func() {
@@ -33,8 +39,6 @@ func (a *app) view(c *ui.Context) {
 		switch a.page {
 		case "player":
 			a.playerView(c)
-		case "settings":
-			a.settingsView(c)
 		default:
 			a.libraryView(c)
 		}
@@ -42,6 +46,8 @@ func (a *app) view(c *ui.Context) {
 	a.queueModal(c)
 	a.onlineModal(c)
 	a.statsModal(c)
+	a.chapterModal(c)
+	a.settingsFallback(c)
 	a.transitionView(c)
 }
 func (a *app) titlebar(c *ui.Context) {
@@ -50,7 +56,7 @@ func (a *app) titlebar(c *ui.Context) {
 		ui.Icon(c, brandMark).Size(19, 19).TextColor(t.Text)
 		ui.Text(c, "mswplayr").Bold()
 		ui.Spacer(c)
-		icon(c, "settings", "Settings").OnClick(func() { a.navigate("settings") })
+		icon(c, "settings", "Settings").OnClick(a.openSettings)
 		icon(c, "min", "Minimize").OnClick(func() {
 			if a.window != nil {
 				a.window.Minimize()
@@ -126,6 +132,9 @@ func (a *app) libraryView(c *ui.Context) {
 					i := row.Index
 					v := videos[i]
 					entry := a.thumbnailFor(v.Path)
+					if entry.image == nil && !entry.pending && a.thumbJobs != nil {
+						c.After(max(50*time.Millisecond, time.Until(entry.retryAt)))
+					}
 					ui.Row(c).FillWidth().Height(d.row).Padding(4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
 						button := ui.ButtonBase(c.Key("video")).Label("Video: " + v.Name).Grow(1).MinWidth(0).FillHeight().Padding(6).Gap(12).AlignItems(ui.Center).Radius(10).Background(ui.Transparent)
 						if a.selectedVideo == v.Path {
@@ -177,7 +186,7 @@ func (a *app) settingsView(c *ui.Context) {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Settings").FontSize(22).Bold()
 				ui.Spacer(c)
-				ui.Button(c, "Back to library").OnClick(func() { a.navigate("library") })
+				ui.Button(c, "Done").OnClick(a.closeSettings)
 			})
 			if a.store != nil {
 				if err := a.store.lastError(); err != nil {
@@ -231,6 +240,7 @@ func (a *app) settingsView(c *ui.Context) {
 				ui.Select(c, &a.subtitleLanguage, subtitleLanguages).Label("Preferred subtitle language").Width(240).OnChange(a.subtitlePreferencesChanged)
 				ui.Text(c, "Uses existing captions first, then downloads a matching subtitle when available.").TextColor(t.TextMuted)
 			})
+			a.subtitleAppearanceView(c)
 		})
 	})
 }
@@ -245,9 +255,10 @@ func (a *app) playerView(c *ui.Context) {
 		ui.Text(c, title).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
 		icon(c, "queue", "Play queue").OnClick(func() { a.showQueue = true; a.layoutHost() })
 		icon(c, "more", "Stats for nerds").OnClick(func() { a.statsOpen = true; a.layoutHost() })
+		icon(c, "chapters", "Chapters").Disabled(!a.status.Loaded || len(chapters(a.status.ChapterJSON)) == 0).OnClick(func() { a.chaptersOpen = true; a.captionsOpen = false; a.audioOpen = false; a.layoutHost() })
 	})
 	ui.Row(c).FillWidth().Grow(1).MinHeight(0).Padding(0, 20).Children(func() {
-		ui.Column(c).Grow(1).FillHeight().MinWidth(0).Background(ui.Hex("#080808")).Radius(12).Center().Gap(12).Children(func() {
+		viewport := ui.Column(c).Label("Video player").Grow(1).FillHeight().MinWidth(0).Background(ui.Hex("#080808")).Radius(12).Center().Gap(12).Children(func() {
 			if !a.status.Loaded || a.notice != "" {
 				heading := "Opening video"
 				if a.notice != "" {
@@ -259,6 +270,9 @@ func (a *app) playerView(c *ui.Context) {
 				}
 			}
 		})
+		if viewport.DoubleClicked() {
+			a.toggleFullscreen()
+		}
 	})
 	ui.Column(c).Height(104).FillWidth().Shrink(0).Padding(12, 24, 12, 24).Gap(8).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
@@ -279,21 +293,21 @@ func (a *app) playerView(c *ui.Context) {
 			icon(c, "next", "Next video").Disabled(a.current+1 >= len(a.queue)).OnClick(func() { a.play(a.current + 1) })
 			ui.Spacer(c)
 			ui.Button(c, fmt.Sprintf("%gx", a.speed())).Label("Playback speed").Width(56).Background(ui.Transparent).Border(0, ui.Transparent).OnClick(a.cycleSpeed)
-			icon(c, "audio", "Cycle audio track").OnClick(func() { a.send("cycle", "aid") })
+			a.audioMenu(c)
 			a.captionMenu(c)
 			icon(c, "expand", "Fullscreen").Disabled(!a.status.Loaded).OnClick(a.toggleFullscreen)
 		})
 	})
 }
 func (a *app) captionMenu(c *ui.Context) {
-	trigger := icon(c, "sub", "Captions").OnClick(func() { a.captionsOpen = !a.captionsOpen; a.layoutHost() })
+	trigger := icon(c, "sub", "Captions").OnClick(func() { a.captionsOpen = !a.captionsOpen; a.audioOpen = false; a.layoutHost() })
 	popup := ui.Popover(c, trigger, &a.captionsOpen, func() {
 		ui.Column(c).Width(300).MaxHeight(360).Gap(4).Children(func() {
 			ui.Text(c, "Captions").FontSize(16).Bold().Padding(8)
 			if status := a.subtitleStatus(); status != "" {
 				ui.Text(c, status).TextColor(c.Theme().TextMuted).Padding(4, 8)
 			}
-			ui.Scroll(c).FillWidth().MaxHeight(200).Padding(0, scrollbarGutter, 0, 0).Children(func() {
+			ui.Scroll(c).FillWidth().MaxHeight(160).MinHeight(0).Padding(0, scrollbarGutter, 0, 0).Children(func() {
 				ui.Column(c).FillWidth().Gap(4).Children(func() {
 					a.captionOption(c, "Off", "no")
 					for _, track := range subtitleTracks(a.status.TrackJSON) {
@@ -301,8 +315,9 @@ func (a *app) captionMenu(c *ui.Context) {
 					}
 				})
 			})
-			ui.Button(c, "Load subtitle file…").FillWidth().OnClick(a.loadSubtitle)
-			ui.Button(c, "Find subtitles online…").FillWidth().Disabled(a.current < 0).OnClick(a.openSubtitleSearch)
+			ui.Button(c, "Load subtitle file…").FillWidth().Shrink(0).OnClick(a.loadSubtitle)
+			ui.Button(c, "Find subtitles online…").FillWidth().Shrink(0).Disabled(a.current < 0).OnClick(a.openSubtitleSearch)
+			ui.Button(c, "Subtitle appearance…").FillWidth().Shrink(0).OnClick(a.openSubtitleAppearance)
 		})
 	})
 	if popup.Dismissed() {

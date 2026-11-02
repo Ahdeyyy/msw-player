@@ -28,6 +28,13 @@ func TestPlayerView(t *testing.T) {
 	if !a.dark {
 		t.Fatal("theme did not change")
 	}
+	if a.page != "library" {
+		t.Fatal("settings replaced library")
+	}
+	if err := tt.Click("Done"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	a.page = "player"
 	a.queue = []string{"Movie.mkv"}
 	a.current = 0
@@ -57,7 +64,7 @@ func TestPlayerView(t *testing.T) {
 	if !a.fullscreen {
 		t.Fatal("fullscreen did not open")
 	}
-	if len(tt.Texts()) != 0 {
+	if len(tt.Texts()) != 1 || tt.Texts()[0] != "Video player" {
 		t.Fatalf("fullscreen contains controls: %v", tt.Texts())
 	}
 	a.exitFullscreen()
@@ -104,7 +111,11 @@ func TestRender(t *testing.T) {
 				if page == "queue" || page == "captions" || page == "fullscreen" {
 					a.page = "player"
 				}
-				img := ui.Render(a.view, size[0], size[1], 1)
+				view := a.view
+				if page == "settings" {
+					view = a.settingsWindowView
+				}
+				img := ui.Render(view, size[0], size[1], 1)
 				os.MkdirAll("build", 0755)
 				name := "light"
 				if dark {

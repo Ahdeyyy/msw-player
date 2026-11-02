@@ -21,6 +21,7 @@ type preferences struct {
 	History          map[string]bookmark `json:"history,omitempty"`
 	AutoSubtitles    *bool               `json:"autoSubtitles,omitempty"`
 	SubtitleLanguage string              `json:"subtitleLanguage,omitempty"`
+	SubtitleStyle    *subtitleAppearance `json:"subtitleStyle,omitempty"`
 }
 
 func loadSettings(path string) (preferences, error) {
@@ -69,13 +70,15 @@ func newSettingsStore(path string) *settingsStore {
 func (s *settingsStore) close()           { close(s.jobs); <-s.done }
 func (s *settingsStore) lastError() error { s.mu.Lock(); defer s.mu.Unlock(); return s.err }
 func (a *app) persist() {
+	a.invalidateWindows()
 	if a.store != nil {
 		history := make(map[string]bookmark, len(a.history))
 		for path, b := range a.history {
 			history[path] = b
 		}
 		auto := a.autoSubtitles
-		p := preferences{Folders: append([]string(nil), a.folders...), Dark: a.dark, Density: a.density, History: history, AutoSubtitles: &auto, SubtitleLanguage: a.subtitleLanguage}
+		style := a.subtitleStyle
+		p := preferences{Folders: append([]string(nil), a.folders...), Dark: a.dark, Density: a.density, History: history, AutoSubtitles: &auto, SubtitleLanguage: a.subtitleLanguage, SubtitleStyle: &style}
 		select {
 		case a.store.jobs <- p:
 		default:
@@ -153,6 +156,7 @@ func (a *app) rescan() {
 				a.libraryNotice = fmt.Sprintf("Some folders could not be read (%d). Check that your sources are available.", len(warnings))
 			}
 			a.filterLibrary()
+			a.invalidateWindows()
 		})
 	}()
 }
@@ -197,8 +201,12 @@ func (a *app) browseFolder() {
 		return
 	}
 	window := a.window
+	parent := window
+	if a.settingsWindow != nil {
+		parent = a.settingsWindow
+	}
 	go func() {
-		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: window, Title: "Add video folder", Directory: true, Multiple: true})
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: parent, Title: "Add video folder", Directory: true, Multiple: true})
 		window.Update(func() {
 			if err != nil {
 				a.libraryNotice = err.Error()
@@ -271,6 +279,8 @@ func (a *app) navigate(page string) {
 	a.page = page
 	a.showQueue = false
 	a.captionsOpen = false
+	a.audioOpen = false
+	a.chaptersOpen = false
 	a.onlineOpen = false
 	a.statsOpen = false
 	a.layoutHost()
@@ -286,6 +296,8 @@ func (a *app) toggleFullscreen() {
 	a.page = "player"
 	a.showQueue = false
 	a.captionsOpen = false
+	a.audioOpen = false
+	a.chaptersOpen = false
 	a.onlineOpen = false
 	a.statsOpen = false
 	a.fullscreen = !a.fullscreen

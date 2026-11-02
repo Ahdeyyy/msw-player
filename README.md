@@ -6,11 +6,11 @@ The app icon is **Cadence / forward**, selected from twenty distinct concepts th
 
 Add video folders to build your library, search or filter by source folder, then play a video. Settings manages saved sources and appearance. Subfolders are scanned automatically; unavailable sources are reported without removing them. Refresh rescans for new files. You can also drop folders or individual videos from Explorer, or pass paths on the command line.
 
-The player keeps only the timeline and transport controls visible. The queue opens as a modal, captions open as an exact track selection menu, and codec/resolution details live in **Stats for nerds**. Fullscreen shows only the video; use the keyboard to control playback and Escape to return.
+The player keeps only the timeline and transport controls visible. Settings opens in its own owned window, leaving the current library/player view and playback intact. The queue and chapter list open as modals, captions and audio open as exact track selection menus, and codec/resolution details live in **Stats for nerds**. Fullscreen shows only the video; double-click the video or use F/Escape to return.
 
 Click a library video once to select it; click it again to open it. Its thumbnail expands into the player. Watched videos resume at their saved position, while unwatched videos start at the beginning after the thumbnail fades. The transition respects the system's reduced-motion preference.
 
-Thumbnails use the opening frame for unwatched videos and the saved playback position for watched videos. A single background mpv worker extracts frames for visible rows, with a bounded in-memory cache and one disk thumbnail per source file. Unreadable or unsupported files retain a simple video placeholder. Returning to the library pauses playback and saves the current position.
+Thumbnails use a preview from inside unwatched videos, skipping dark frames when possible, and the exact saved playback position for watched videos. A single background mpv worker extracts frames for visible rows, with a bounded in-memory cache and one disk thumbnail per source file. Failed loads are retried, and damaged cached images are regenerated. Unreadable or unsupported files retain a simple video placeholder. Returning to the library pauses playback and saves the current position.
 
 ## Run
 
@@ -36,8 +36,14 @@ Keep `mpv.exe` and `d3dcompiler_43.dll` beside the packaged player. During devel
 | M | Mute |
 | F | Fullscreen |
 | Escape | Leave fullscreen |
+| Page Up / Page Down | Previous / next chapter |
+| Double-click video | Toggle fullscreen |
 
-The audio button cycles audio tracks. The caption menu lists each subtitle track by title, language, and ID, including external/forced/SDH indicators where available. Choose **Off** to disable captions or **Load subtitle file** for SRT, ASS, SSA, VTT, SUB, and IDX files. mpv also discovers matching external subtitle files. The speed button cycles 1, 1.25, 1.5, 2, and 0.75 times normal speed.
+The audio menu lists each available audio track by title, language, and ID, highlights the current track, and offers Off. The caption menu lists each subtitle track by title, language, and ID, including external/forced/SDH indicators where available. Choose **Off** to disable captions or **Load subtitle file** for SRT, ASS, SSA, VTT, SUB, and IDX files. mpv also discovers matching external subtitle files. The speed button cycles 1, 1.25, 1.5, 2, and 0.75 times normal speed.
+
+The chapter button lists embedded chapter names and timestamps, highlights the current chapter, and provides previous/next controls. Selecting a chapter seeks to it while preserving pause state. The button is disabled for videos without chapter metadata.
+
+**Subtitle appearance** is available from the caption menu or Settings. Font, size, text color, outline, shadow, vertical position, bold text, and a dark background are applied live and saved. The Reset button restores defaults. Text styling does not change image-based captions; styled ASS/SSA captions keep their authored styling unless **Apply to styled ASS/SSA captions** is enabled.
 
 Subtitles are found, downloaded, cached, and loaded entirely inside the app. Automatic loading is enabled by default: the player uses an existing track in your preferred language first, then a previously downloaded subtitle, then searches online. Settings lets you change the language or turn automatic downloads off. Choosing **Off** or a local track stops any pending automatic request for that video.
 
@@ -75,7 +81,7 @@ $env:MSWPLAYR_RENDER='1'
 go test -run TestRender
 ```
 
-Integration tests generate H.264 MP4/MKV/MOV, HEVC MKV, VP9 WebM, and AV1 MP4 samples with audio and verify loading, timeline progression, pause, seek, and resume. A separate multitrack MKV test verifies exact subtitle selection, disabling captions, and external subtitle loading. UI and filesystem tests cover fullscreen, modal transitions, caption selection, source persistence, filtering, duplicate sources, and cancelled scans. These tests do not measure frame drops, subjective audio synchronization, or HDR correctness.
+Integration tests generate H.264 MP4/MKV/MOV, HEVC MKV, VP9 WebM, and AV1 MP4 samples with audio and verify loading, timeline progression, pause, seek, and resume. Separate multitrack MKV tests verify exact subtitle/audio selection, chapter seeks, the native double-click/Escape bindings, and external subtitle loading. A captured video frame verifies that subtitle color styling reaches the renderer. UI and filesystem tests cover fullscreen, separate settings presentation, modal transitions, saved styling, caption selection, source persistence, filtering, duplicate sources, and cancelled scans. These tests do not measure frame drops, subjective audio synchronization, or HDR correctness.
 
 ## Dependencies
 

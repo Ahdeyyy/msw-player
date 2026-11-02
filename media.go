@@ -34,4 +34,7 @@ type playback struct {
 	Error                 string
 	TrackJSON, SubtitleID string
 	FPS                   float64
+	AudioID, ChapterJSON  string
+	Chapter               int
+	InputSerial           uint64
 }

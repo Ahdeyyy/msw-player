@@ -21,6 +21,7 @@ type player struct {
 	state    playback
 	commands chan []any
 	cancel   context.CancelFunc
+	input    chan string
 }
 
 func findMPV() (string, error) {
@@ -41,7 +42,7 @@ func findMPV() (string, error) {
 }
 func newPlayer(host uintptr) *player {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &player{commands: make(chan []any, 128), cancel: cancel}
+	p := &player{commands: make(chan []any, 128), cancel: cancel, input: make(chan string, 32)}
 	go p.run(ctx, host)
 	return p
 }
@@ -77,7 +78,19 @@ func (p *player) run(ctx context.Context, host uintptr) {
 		return
 	}
 	pipe := fmt.Sprintf(`\\.\pipe\mswplayr-%d-%d`, os.Getpid(), time.Now().UnixNano())
-	cmd := exec.CommandContext(ctx, path, "--no-config", "--idle=yes", "--keep-open=yes", "--force-window=yes", fmt.Sprintf("--wid=%d", host), "--input-ipc-server="+pipe, "--hwdec=auto-safe", "--vo=gpu-next", "--gpu-api=d3d11", "--osc=no", "--osd-level=0", "--input-default-bindings=yes", "--input-vo-keyboard=yes", "--terminal=no", "--volume-max=100", "--demuxer-max-bytes=64MiB", "--demuxer-max-back-bytes=16MiB")
+	bindings, err := os.CreateTemp("", "mswplayr-input-*.conf")
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	defer os.Remove(bindings.Name())
+	if _, err = bindings.WriteString(playerInputBindings); err != nil {
+		bindings.Close()
+		p.fail(err)
+		return
+	}
+	bindings.Close()
+	cmd := exec.CommandContext(ctx, path, "--no-config", "--idle=yes", "--keep-open=yes", "--force-window=yes", fmt.Sprintf("--wid=%d", host), "--input-ipc-server="+pipe, "--input-conf="+bindings.Name(), "--hwdec=auto-safe", "--vo=gpu-next", "--gpu-api=d3d11", "--osc=no", "--osd-level=0", "--input-default-bindings=no", "--input-vo-keyboard=yes", "--terminal=no", "--volume-max=100", "--demuxer-max-bytes=64MiB", "--demuxer-max-back-bytes=16MiB")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err = cmd.Start(); err != nil {
 		p.fail(err)
@@ -105,7 +118,7 @@ func (p *player) run(ctx context.Context, host uintptr) {
 	defer conn.Close()
 	go func() { <-ctx.Done(); conn.Close() }()
 	enc := json.NewEncoder(conn)
-	for id, name := range []string{"time-pos", "duration", "pause", "eof-reached", "video-codec", "hwdec-current", "width", "height", "idle-active", "track-list", "sid", "container-fps"} {
+	for id, name := range []string{"time-pos", "duration", "pause", "eof-reached", "video-codec", "hwdec-current", "width", "height", "idle-active", "track-list", "sid", "container-fps", "aid", "chapter-list", "chapter"} {
 		if err = enc.Encode(map[string]any{"command": []any{"observe_property", id + 1, name}}); err != nil {
 			p.fail(err)
 			return
@@ -144,12 +157,21 @@ func (p *player) event(data []byte) {
 	var e struct {
 		Event, Name, Error, Reason string
 		Data                       json.RawMessage
+		Args                       []string `json:"args"`
 	}
 	if json.Unmarshal(data, &e) != nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if e.Event == "client-message" && len(e.Args) == 2 && e.Args[0] == "mswplayr" {
+		select {
+		case p.input <- e.Args[1]:
+			p.state.InputSerial++
+		default:
+		}
+		return
+	}
 	if e.Event == "end-file" && e.Reason == "error" {
 		p.state.Error = "This video could not be played. Check that the file is readable and complete."
 		p.state.Loaded = false
@@ -162,6 +184,13 @@ func (p *player) event(data []byte) {
 		return
 	}
 	switch e.Name {
+	case "aid":
+		p.state.AudioID = trackID(e.Data)
+	case "chapter-list":
+		p.state.ChapterJSON = string(e.Data)
+	case "chapter":
+		p.state.Chapter = -1
+		json.Unmarshal(e.Data, &p.state.Chapter)
 	case "container-fps":
 		json.Unmarshal(e.Data, &p.state.FPS)
 	case "track-list":
@@ -197,14 +226,14 @@ var getDPI = user32.NewProc("GetDpiForWindow")
 
 func makeHost(parent uintptr) uintptr {
 	class, _ := syscall.UTF16PtrFromString("STATIC")
-	h, _, _ := createWindow.Call(0, uintptr(unsafe.Pointer(class)), 0, 0x40000000|0x04000000|0x02000000|0x08000000, 0, 0, 1, 1, parent, 0, 0, 0)
+	h, _, _ := createWindow.Call(0, uintptr(unsafe.Pointer(class)), 0, 0x40000000|0x04000000|0x02000000, 0, 0, 1, 1, parent, 0, 0, 0)
 	return h
 }
 func (a *app) layoutHost() {
 	if a.window == nil || a.host == 0 {
 		return
 	}
-	if !a.status.Loaded || a.notice != "" || a.page != "player" || a.transition != nil || (!a.fullscreen && (a.showQueue || a.captionsOpen || a.onlineOpen || a.statsOpen)) {
+	if !a.status.Loaded || a.notice != "" || a.page != "player" || a.transition != nil || (!a.fullscreen && (a.showQueue || a.captionsOpen || a.onlineOpen || a.statsOpen || a.audioOpen || a.chaptersOpen)) {
 		if a.hostVisible {
 			showWindow.Call(a.host, 0)
 			a.hostVisible = false

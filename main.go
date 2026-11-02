@@ -56,10 +56,18 @@ type app struct {
 	subtitleService                                 *subtitleService
 	subtitleRequest                                 uint64
 	subtitlesDir                                    string
+	settingsWindow                                  *mygo.Window
+	settingsOpen                                    bool
+	settingsTarget                                  string
+	audioOpen, chaptersOpen                         bool
+	chapterList                                     ui.ListState
+	subtitleStyle                                   subtitleAppearance
+	appliedSubtitleStyle                            subtitleAppearance
+	styleApplied                                    bool
 }
 
 func newApp() *app {
-	return &app{current: -1, volume: 80, page: "library", subtitleID: "no", subtitleLanguage: "English", autoSubtitles: true, density: "Comfortable", history: map[string]bookmark{}, thumbs: map[string]*thumbnail{}, done: make(chan struct{})}
+	return &app{current: -1, volume: 80, page: "library", subtitleID: "no", subtitleLanguage: "English", autoSubtitles: true, subtitleStyle: defaultSubtitleAppearance(), density: "Comfortable", history: map[string]bookmark{}, thumbs: map[string]*thumbnail{}, done: make(chan struct{})}
 }
 func (a *app) send(args ...any) {
 	if a.engine != nil {
@@ -95,6 +103,8 @@ func (a *app) play(index int) {
 	a.page = "player"
 	a.showQueue = false
 	a.captionsOpen = false
+	a.audioOpen = false
+	a.chaptersOpen = false
 	a.notice = ""
 	if a.engine == nil || a.engine.snapshot().Error != "" {
 		if a.engine != nil {
@@ -114,6 +124,8 @@ func (a *app) play(index int) {
 	}
 	a.engine.command("set_property", "volume", a.volume)
 	a.engine.command("set_property", "speed", a.speed())
+	a.styleApplied = false
+	a.applySubtitleAppearance()
 	a.layoutHost()
 }
 func (a *app) add(paths []string) {
@@ -177,6 +189,9 @@ func main() {
 		a.subtitleLanguage = prefs.SubtitleLanguage
 	}
 	a.store = newSettingsStore(filepath.Join(base, "settings.json"))
+	if prefs.SubtitleStyle != nil {
+		a.subtitleStyle = normalizedSubtitleAppearance(*prefs.SubtitleStyle)
+	}
 	mygo.App.WhenReady(func() {
 		a.window = mygo.NewWindow(mygo.WindowOptions{Title: "mswplayr", Width: 1120, Height: 760, MinWidth: 760, MinHeight: 540, StateKey: "main", Frameless: true, BackgroundColor: "#f1f3f8", Content: ui.View(a.view)})
 		a.host = makeHost(a.window.NativeHandle())
@@ -186,6 +201,7 @@ func main() {
 		a.window.OnLeaveFullScreen(func() { a.fullscreen = false; a.window.Invalidate(); a.layoutHost() })
 		a.window.OnFileDrop(func(e *mygo.FileDropEvent) { a.importPaths(e.Paths) })
 		a.window.OnClosed(func() {
+			a.closeSettings()
 			a.cancelSubtitleJob()
 			a.checkpoint(true)
 			close(a.done)
@@ -226,6 +242,7 @@ func main() {
 							return
 						}
 						a.status = s
+						a.drainPlayerInput(engine)
 						a.subtitleTick()
 						a.seek = s.Position
 						a.checkpoint(false)
