@@ -1,0 +1,11 @@
+{
+  "concepts": 20,
+  "embedded_frames_match_exports": true,
+  "executable": "build/windows-amd64/mswplayr.exe",
+  "ico_frames": 9,
+  "judge_model": "claude-opus-5-5",
+  "judge_provider": "Claude",
+  "master_png_size": 1024,
+  "transparent_corners": true,
+  "winner": "Cadence / forward"
+}

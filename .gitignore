@@ -1,0 +1,4 @@
+/build/
+/runtime/
+/.mygo/
+mygo_windows_*.syso

@@ -1,0 +1,8 @@
+{
+  "name": "mswplayr",
+  "identifier": "com.example.mswplayr",
+  "version": "0.4.0",
+  "icon": "resources/icon.png",
+  "resources": ["runtime/mpv.exe", "runtime/d3dcompiler_43.dll", "README.md"],
+  "out": "build"
+}
