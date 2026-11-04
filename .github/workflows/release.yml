@@ -1,0 +1,186 @@
+name: Build and release
+
+# Every push to the default branch publishes a rolling "nightly" pre-release;
+# a v* tag publishes a versioned release; Run workflow publishes on demand.
+# Pull requests build and test only: they cannot write releases.
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.5.0). Empty publishes nightly.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# One release at a time per ref, and never cancel a publish half-way.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      asset: ${{ steps.package.outputs.asset }}
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Decide version and tag
+        id: version
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          $version = (Get-Content mygo.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tag = $env:GITHUB_REF_NAME; $prerelease = 'false'
+          } elseif ($env:INPUT_TAG) {
+            $tag = $env:INPUT_TAG; $prerelease = 'false'
+          } else {
+            $tag = 'nightly'; $prerelease = 'true'
+          }
+          if ($prerelease -eq 'false' -and $tag.TrimStart('v') -ne $version) {
+            Write-Output "::warning::Tag $tag does not match mygo.json version $version."
+          }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "prerelease=$prerelease" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Output "Version $version, publishing as $tag (prerelease: $prerelease)"
+
+      - name: Cache mpv runtime
+        uses: actions/cache@v4
+        with:
+          path: runtime
+          key: mpv-${{ hashFiles('scripts/setup-mpv.ps1') }}
+
+      - name: Install mpv runtime
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if (-not (Test-Path runtime/mpv.exe)) { ./scripts/setup-mpv.ps1 }
+          if (-not (Test-Path runtime/mpv.exe) -or -not (Test-Path runtime/d3dcompiler_43.dll)) {
+            throw 'mpv runtime is incomplete.'
+          }
+
+      - name: Vet
+        shell: bash
+        run: |
+          go vet ./...
+          go tool mygo vet .
+
+      - name: Test
+        shell: bash
+        run: go test ./...
+
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Package
+        id: package
+        shell: pwsh
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $name = "mswplayr-$env:TAG-windows-amd64"
+          $stage = "dist/$name"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          $files = 'mswplayr.exe', 'mpv.exe', 'd3dcompiler_43.dll', 'icon.ico', 'icon.png', 'README.md'
+          foreach ($f in $files) {
+            if (-not (Test-Path "build/$f")) { throw "Build output missing: $f" }
+            Copy-Item "build/$f" $stage
+          }
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$name.zip" -Force
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name.zip" | Set-Content "dist/$name.zip.sha256" -NoNewline -Encoding ascii
+          "asset=$name.zip" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Get-ChildItem dist -File | Format-Table Name, Length
+
+      - name: Upload build
+        uses: actions/upload-artifact@v5
+        with:
+          name: mswplayr-windows-amd64
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish release
+    needs: build
+    # Explicitly not gated on tags: every non-PR run publishes (nightly or
+    # versioned). It runs only after a successful build, never on a skipped one.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.build.outputs.tag }}
+      VERSION: ${{ needs.build.outputs.version }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
+      ASSET: ${{ needs.build.outputs.asset }}
+    steps:
+      - name: Check build outputs
+        run: |
+          for v in TAG VERSION PRERELEASE ASSET; do
+            if [ -z "${!v}" ]; then echo "::error::Build output $v is empty"; exit 1; fi
+          done
+
+      - uses: actions/download-artifact@v6
+        with:
+          name: mswplayr-windows-amd64
+          path: dist
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          ls -l dist
+          test -f "dist/$ASSET"
+          if [ "$PRERELEASE" = "true" ]; then
+            # The rolling nightly is replaced, tag included, so it always
+            # points at this commit.
+            gh release delete "$TAG" --cleanup-tag --yes || true
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Nightly ($VERSION, ${GITHUB_SHA::7})" \
+              --notes "Automatic build of ${GITHUB_SHA} from ${GITHUB_REF_NAME}. Unzip and run mswplayr.exe; mpv.exe and d3dcompiler_43.dll must stay beside it."
+          elif gh release view "$TAG" > /dev/null 2>&1; then
+            # Re-running a versioned release replaces its files.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "mswplayr $TAG" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Verify release
+        run: |
+          set -euo pipefail
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          echo "$assets"
+          grep -qxF "$ASSET" <<< "$assets" || { echo "::error::$ASSET missing from release $TAG"; exit 1; }
+          grep -qxF "$ASSET.sha256" <<< "$assets" || { echo "::error::checksum missing from release $TAG"; exit 1; }
+          echo "Published $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
