@@ -113,6 +113,8 @@ func TestSubtitleAppearancePersistenceAndCommands(t *testing.T) {
 	a.subtitleStyle.Background = true
 	a.subtitleStyle.Bold = true
 	a.subtitleStyle.OverrideASS = true
+	a.subtitleStyle.Position = 65
+	a.subtitleStyle.Alignment = "Right"
 	a.applySubtitleAppearance()
 	seen := map[string]any{}
 	for len(a.engine.commands) > 0 {
@@ -133,7 +135,7 @@ func TestSubtitleAppearancePersistenceAndCommands(t *testing.T) {
 	a.persist()
 	a.store.close()
 	prefs, err := loadSettings(path)
-	if err != nil || prefs.SubtitleStyle == nil || prefs.SubtitleStyle.Size != 54 || prefs.SubtitleStyle.Color != "Yellow" {
+	if err != nil || prefs.SubtitleStyle == nil || prefs.SubtitleStyle.Size != 54 || prefs.SubtitleStyle.Color != "Yellow" || prefs.SubtitleStyle.Position != 65 || prefs.SubtitleStyle.Alignment != "Right" {
 		t.Fatalf("%+v %v", prefs, err)
 	}
 }

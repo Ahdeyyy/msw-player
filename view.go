@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	"path/filepath"
 	"strconv"
@@ -84,11 +85,11 @@ func (a *app) libraryView(c *ui.Context) {
 	ui.Row(c).FillWidth().Grow(1).MinHeight(0).Padding(16, 20, 20, 20).Gap(d.gap).Children(func() {
 		ui.Column(c).Width(180).Shrink(0).FillHeight().Gap(8).Children(func() {
 			ui.Text(c, "Library").FontSize(16).Bold().Padding(8, 10)
-			navButton(c, "All videos", a.folderFilter == "").OnClick(func() { a.folderFilter = ""; a.filterLibrary() })
+			choice(c, "library-nav", "All videos", a.folderFilter == "").FillWidth().OnClick(func() { a.folderFilter = ""; a.filterLibrary() })
 			ui.Scroll(c).FillWidth().Grow(1).MinHeight(0).Padding(0, scrollbarGutter, 0, 0).Children(func() {
 				ui.Column(c).FillWidth().Gap(4).Children(func() {
 					for _, path := range a.folders {
-						navButton(c.Key(path), filepath.Base(path), a.folderFilter == path).Tooltip(path).OnClick(func() { a.folderFilter = path; a.filterLibrary() })
+						choice(c.Key(path), "library-nav", filepath.Base(path), a.folderFilter == path).FillWidth().Tooltip(path).OnClick(func() { a.folderFilter = path; a.filterLibrary() })
 					}
 				})
 			})
@@ -111,8 +112,12 @@ func (a *app) libraryView(c *ui.Context) {
 			if a.libraryNotice != "" {
 				ui.Text(c, a.libraryNotice).TextColor(t.TextMuted)
 			}
+			ui.Checkbox(c.Key("group-by-folder"), &a.groupByFolder, "Group by folder").OnChange(func() { a.filterLibrary(); a.persist() })
 			if a.scanning {
-				ui.Text(c, "Scanning folders…").TextColor(t.TextMuted)
+				ui.Row(c.Key("scanning")).AlignItems(ui.Center).Gap(8).Transition(ui.ElementTransition{Duration: 180 * time.Millisecond, Ease: easeOut, Enter: &ui.Motion{Y: -4}, Exit: &ui.Motion{}}).Children(func() {
+					ui.Spinner(c).Size(14, 14)
+					ui.Text(c, "Scanning folders…").TextColor(t.TextMuted)
+				})
 			}
 			if len(a.filtered) == 0 {
 				ui.Column(c).FillWidth().Grow(1).Center().Gap(16).Children(func() {
@@ -127,52 +132,100 @@ func (a *app) libraryView(c *ui.Context) {
 				})
 			} else {
 				videos := a.filtered
-				ui.List(c.Key("library-videos"), &a.libraryList, len(videos)).FillWidth().Grow(1).MinHeight(0).Padding(0, scrollbarGutter, 0, 0).ItemKey(func(i int) any { return videos[i].Path }).Rows(func(row ui.ListRow) {
-					c := row.Context
-					i := row.Index
-					v := videos[i]
-					entry := a.thumbnailFor(v.Path)
-					if entry.image == nil && !entry.pending && a.thumbJobs != nil {
-						c.After(max(50*time.Millisecond, time.Until(entry.retryAt)))
-					}
-					ui.Row(c).FillWidth().Height(d.row).Padding(4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-						button := ui.ButtonBase(c.Key("video")).Label("Video: " + v.Name).Grow(1).MinWidth(0).FillHeight().Padding(6).Gap(12).AlignItems(ui.Center).Radius(10).Background(ui.Transparent)
-						if a.selectedVideo == v.Path {
-							button.Background(t.Selection)
-						} else if button.Hovered() {
-							button.Background(t.SurfaceHover)
+				rows := a.libraryRows
+				ui.Box(c).FillWidth().Grow(1).MinHeight(0).Children(func() {
+					ui.List(c.Key("library-videos"), &a.libraryList, len(rows)).Fill().Padding(0, scrollbarGutter, 0, 0).TrackScroll(&a.libraryScroll).ItemKey(func(i int) any {
+						if rows[i].videoIndex < 0 {
+							return struct{ Folder string }{rows[i].folder}
 						}
-						button.Children(func() {
-							ui.Box(c.Key("thumbnail")).Bind(&entry.handle).Size(d.thumbnailW, d.thumbnailH).Shrink(0).Radius(6).Clip().Background(ui.Hex("#080808")).Center().Children(func() {
-								if entry.image != nil {
-									ui.Image(c, entry.image).Fill().Fit(ui.Contain)
-								} else {
-									ui.Icon(c, icons["video"]).Size(24, 24).TextColor(t.TextMuted)
+						return videos[rows[i].videoIndex].Path
+					}).Rows(func(row ui.ListRow) {
+						c := row.Context
+						item := rows[row.Index]
+						if item.videoIndex < 0 {
+							ui.Row(c).FillWidth().Height(40).AlignItems(ui.Center).Gap(12).Padding(6).Children(func() {
+								ui.Text(c, filepath.Base(item.folder)).Bold().SingleLine().MinWidth(0).Tooltip(item.folder)
+								count := fmt.Sprintf("%d videos", item.count)
+								if item.count == 1 {
+									count = "1 video"
 								}
+								ui.Text(c, count).FontSize(12).TextColor(t.TextMuted)
+								ui.Text(c, item.folder).FontSize(12).TextColor(t.TextMuted).SingleLine().MinWidth(0).Grow(1)
 							})
-							ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-								ui.Text(c, v.Name).Bold().SingleLine()
-								rel, _ := filepath.Rel(v.Folder, filepath.Dir(v.Path))
-								folder := filepath.Base(v.Folder)
-								if rel != "." && rel != "" {
-									folder = filepath.Join(folder, rel)
-								}
-								ui.Text(c, folder).FontSize(12).TextColor(t.TextMuted).SingleLine()
-							})
-							if pos := a.resumePosition(v.Path); pos > 0 {
-								ui.Text(c, clock(pos)).FontSize(12).TextColor(t.TextMuted).Shrink(0)
+							return
+						}
+						i := item.videoIndex
+						v := videos[i]
+						entry := a.thumbnailFor(v.Path)
+						if entry.image == nil && !entry.pending && a.thumbJobs != nil {
+							c.After(max(50*time.Millisecond, time.Until(entry.retryAt)))
+						}
+						ui.Row(c).FillWidth().Height(d.row).Padding(4, 0).Gap(8).AlignItems(ui.Center).Children(func() {
+							button := ui.ButtonBase(c.Key("video")).Label("Video: " + v.Name).Grow(1).MinWidth(0).FillHeight().Padding(6).Gap(12).AlignItems(ui.Center).Radius(10).Background(ui.Transparent).Transition(colorFade)
+							if a.selectedVideo == v.Path {
+								button.Background(t.Selection)
+							} else if button.Hovered() {
+								button.Background(t.SurfaceHover)
 							}
-						}).OnClick(func() { a.selectVideo(c, i, entry) })
-						icon(c, "queue", "Add to queue: "+v.Name).OnClick(func() { a.queue = append(a.queue, v.Path) })
+							press(button, .985)
+							button.Children(func() {
+								ui.Box(c.Key("thumbnail")).Bind(&entry.handle).Size(d.thumbnailW, d.thumbnailH).Shrink(0).Radius(6).Clip().Background(ui.Hex("#080808")).Center().Children(func() {
+									if entry.image != nil {
+										// The frame leans in a touch under the pointer.
+										zoom := ui.Pose{}
+										if button.Hovered() {
+											zoom.Scale = 1.04
+										}
+										ui.Image(c.Key("image"), entry.image).Fill().Fit(ui.Contain).Transition(thumbnailFade).AnimatePose(zoom, ui.Animation{Duration: 240 * time.Millisecond, Ease: easeOut})
+									} else {
+										ui.Icon(c, icons["video"]).Size(24, 24).TextColor(t.TextMuted)
+									}
+								})
+								ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
+									ui.Text(c, v.Name).Bold().SingleLine()
+									rel, _ := filepath.Rel(v.Folder, filepath.Dir(v.Path))
+									folder := filepath.Base(v.Folder)
+									if rel != "." && rel != "" {
+										folder = filepath.Join(folder, rel)
+									}
+									ui.Text(c, folder).FontSize(12).TextColor(t.TextMuted).SingleLine()
+								})
+								if pos := a.resumePosition(v.Path); pos > 0 {
+									ui.Text(c, clock(pos)).FontSize(12).FontFeatures("tnum").TextColor(t.TextMuted).Shrink(0)
+								}
+							}).OnClick(func() { a.selectVideo(c, i, entry) })
+							// The queue button turns into a check for a moment to confirm.
+							name := "queue"
+							if left := queuedFeedback - c.Now().Sub(a.queuedAt); a.queuedPath == v.Path && left > 0 {
+								name = "check"
+								c.After(left)
+							}
+							added := icon(c, name, "Add to queue: "+v.Name).OnClick(func() {
+								a.queue = append(a.queue, v.Path)
+								a.queuedPath, a.queuedAt = v.Path, c.Now()
+							})
+							if name == "check" {
+								added.TextColor(t.Accent)
+							}
+						})
 					})
+					// Rows scrolled under the panel's top edge frost as they go.
+					if edge := min(a.libraryScroll.Y/24, 1); edge > 0 {
+						ui.Box(c.Key("scroll-edge")).Absolute().Left(0).Top(0).Right(scrollbarGutter).Height(20).PassThrough().
+							Material(glass.Blur{Radius: 4 * edge, Mask: &ui.LinearGradient{From: ui.RGB(0, 0, 0), To: ui.Transparent, Angle: 180}})
+					}
 				})
 			}
 		})
 	})
 }
+
+// queuedFeedback is how long an add-to-queue button shows its check.
+const queuedFeedback = 1200 * time.Millisecond
+
 func navButton(c *ui.Context, label string, active bool) ui.Element {
 	t := c.Theme()
-	b := ui.Button(c, label).FillWidth().Padding(12).Background(ui.Transparent).Border(0, ui.Transparent)
+	b := ui.Button(c, label).FillWidth().Padding(12).Background(ui.Transparent).Border(0, ui.Transparent).Transition(colorFade)
 	if active {
 		b.Background(t.Selection).TextColor(t.Accent)
 	}
@@ -226,11 +279,7 @@ func (a *app) settingsView(c *ui.Context) {
 				ui.Text(c, "Interface density").Bold()
 				ui.Row(c).Gap(8).Children(func() {
 					for _, density := range []string{"Compact", "Comfortable", "Spacious"} {
-						b := ui.Button(c, density)
-						if a.density == density {
-							b.Background(t.Selection).TextColor(t.Accent)
-						}
-						b.OnClick(func() { a.density = density; a.persist() })
+						choice(c, "density", density, a.density == density).OnClick(func() { a.density = density; a.persist() })
 					}
 				})
 			})
@@ -245,7 +294,6 @@ func (a *app) settingsView(c *ui.Context) {
 	})
 }
 func (a *app) playerView(c *ui.Context) {
-	t := c.Theme()
 	title := "Nothing playing"
 	if a.current >= 0 {
 		title = filepath.Base(a.queue[a.current])
@@ -264,6 +312,9 @@ func (a *app) playerView(c *ui.Context) {
 				if a.notice != "" {
 					heading = "Playback unavailable"
 				}
+				if a.notice == "" {
+					ui.Spinner(c).Size(20, 20).TextColor(ui.Hex("#a4afc4"))
+				}
 				ui.Text(c, heading).FontSize(16).Bold().TextColor(ui.Hex("#edf0f8"))
 				if a.notice != "" {
 					ui.Text(c, a.notice).MaxWidth(520).TextAlign(ui.Center).TextColor(ui.Hex("#a4afc4"))
@@ -274,59 +325,77 @@ func (a *app) playerView(c *ui.Context) {
 			a.toggleFullscreen()
 		}
 	})
+	a.playbackControls(c)
+}
+func (a *app) playbackControls(c *ui.Context) {
+	t := c.Theme()
 	ui.Column(c).Height(104).FillWidth().Shrink(0).Padding(12, 24, 12, 24).Gap(8).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(14).Children(func() {
-			ui.Text(c, clock(a.seek)).FontSize(12).Width(58).TextColor(t.TextMuted)
-			ui.Slider(c.Key("seek"), &a.seek, 0, max(1, a.status.Duration)).Grow(1).Label("Seek").Disabled(!a.status.Loaded).OnChange(func() { a.send("seek", a.seek, "absolute") })
-			ui.Text(c, clock(a.status.Duration)).FontSize(12).Width(58).TextAlign(ui.End).TextColor(t.TextMuted)
+			ui.Text(c, clock(a.seek)).FontSize(12).FontFeatures("tnum").Width(58).TextColor(t.TextMuted)
+			ui.Slider(c.Key("seek"), &a.seek, 0, max(1, a.status.Duration)).Grow(1).Label("Seek").Disabled(!a.status.Loaded).OnChange(func() {
+				// Hold the thumb where the pointer is until mpv catches up.
+				a.seekHeld = time.Now().Add(500 * time.Millisecond)
+				a.send("seek", a.seek, "absolute")
+			})
+			ui.Text(c, clock(a.status.Duration)).FontSize(12).FontFeatures("tnum").Width(58).TextAlign(ui.End).TextColor(t.TextMuted)
 		})
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			icon(c, "volume", "Mute").OnClick(func() { a.send("cycle", "mute") })
 			ui.Slider(c.Key("volume"), &a.volume, 0, 100).Width(88).Label("Volume").OnChange(func() { a.send("set_property", "volume", a.volume) })
 			ui.Spacer(c)
 			icon(c, "back", "Previous video").Disabled(a.current <= 0).OnClick(func() { a.play(a.current - 1) })
+			a.chapterStepButton(c, -1)
 			name, label := "play", "Play"
 			if a.status.Loaded && !a.status.Paused && !a.status.Ended {
 				name, label = "pause", "Pause"
 			}
-			icon(c, name, label).Size(40, 40).Background(t.Accent).TextColor(t.AccentText).Disabled(!a.status.Loaded).OnClick(a.toggle)
+			keyedIcon(c, "play-pause", name, label).Size(40, 40).Background(t.Accent).TextColor(t.AccentText).Disabled(!a.status.Loaded).OnClick(a.toggle)
+			a.chapterStepButton(c, 1)
 			icon(c, "next", "Next video").Disabled(a.current+1 >= len(a.queue)).OnClick(func() { a.play(a.current + 1) })
 			ui.Spacer(c)
-			ui.Button(c, fmt.Sprintf("%gx", a.speed())).Label("Playback speed").Width(56).Background(ui.Transparent).Border(0, ui.Transparent).OnClick(a.cycleSpeed)
-			a.audioMenu(c)
-			a.captionMenu(c)
+			a.speedButton(c)
+			audio := a.audioMenu(c)
+			captions := a.captionMenu(c)
+			a.cutMenuHole(audio, captions)
 			icon(c, "expand", "Fullscreen").Disabled(!a.status.Loaded).OnClick(a.toggleFullscreen)
 		})
 	})
 }
-func (a *app) captionMenu(c *ui.Context) {
+
+func (a *app) captionMenu(c *ui.Context) ui.Element {
 	trigger := icon(c, "sub", "Captions").OnClick(func() { a.captionsOpen = !a.captionsOpen; a.audioOpen = false; a.layoutHost() })
-	popup := ui.Popover(c, trigger, &a.captionsOpen, func() {
-		ui.Column(c).Width(300).MaxHeight(360).Gap(4).Children(func() {
-			ui.Text(c, "Captions").FontSize(16).Bold().Padding(8)
-			if status := a.subtitleStatus(); status != "" {
-				ui.Text(c, status).TextColor(c.Theme().TextMuted).Padding(4, 8)
-			}
-			ui.Scroll(c).FillWidth().MaxHeight(160).MinHeight(0).Padding(0, scrollbarGutter, 0, 0).Children(func() {
-				ui.Column(c).FillWidth().Gap(4).Children(func() {
-					a.captionOption(c, "Off", "no")
-					for _, track := range subtitleTracks(a.status.TrackJSON) {
-						a.captionOption(c, track.label(), strconv.Itoa(track.ID))
-					}
-				})
-			})
-			ui.Button(c, "Load subtitle file…").FillWidth().Shrink(0).OnClick(a.loadSubtitle)
-			ui.Button(c, "Find subtitles online…").FillWidth().Shrink(0).Disabled(a.current < 0).OnClick(a.openSubtitleSearch)
-			ui.Button(c, "Subtitle appearance…").FillWidth().Shrink(0).OnClick(a.openSubtitleAppearance)
-		})
-	})
+	if a.fullscreen {
+		return ui.Element{}
+	}
+	popup := frost(c, enterFrom(ui.Popover(c, trigger, &a.captionsOpen, func() { a.captionPicker(c) }), trigger))
 	if popup.Dismissed() {
 		a.layoutHost()
 	}
+	return popup
 }
+func (a *app) captionPicker(c *ui.Context) {
+	ui.Column(c).Width(300).MaxHeight(360).Gap(4).Children(func() {
+		ui.Text(c, "Captions").FontSize(16).Bold().Padding(8)
+		if status := a.subtitleStatus(); status != "" {
+			ui.Text(c, status).TextColor(c.Theme().TextMuted).Padding(4, 8)
+		}
+		ui.Scroll(c).FillWidth().MaxHeight(160).MinHeight(0).Padding(0, scrollbarGutter, 0, 0).Children(func() {
+			ui.Column(c).FillWidth().Gap(4).Children(func() {
+				a.captionOption(c, "Off", "no")
+				for _, track := range subtitleTracks(a.status.TrackJSON) {
+					a.captionOption(c, track.label(), strconv.Itoa(track.ID))
+				}
+			})
+		})
+		ui.Button(c, "Load subtitle file…").FillWidth().Shrink(0).OnClick(a.loadSubtitle)
+		ui.Button(c, "Find subtitles online…").FillWidth().Shrink(0).Disabled(a.current < 0).OnClick(a.openSubtitleSearch)
+		ui.Button(c, "Subtitle appearance…").FillWidth().Shrink(0).OnClick(a.openSubtitleAppearance)
+	})
+}
+
 func (a *app) captionOption(c *ui.Context, label, id string) {
 	t := c.Theme()
-	b := ui.Button(c.Key(id), label).FillWidth().Border(0, ui.Transparent).Background(ui.Transparent)
+	b := ui.Button(c.Key(id), label).FillWidth().Border(0, ui.Transparent).Background(ui.Transparent).Transition(colorFade)
 	if a.subtitleID == id {
 		b.Background(t.Selection).TextColor(t.Accent)
 	}
@@ -334,7 +403,7 @@ func (a *app) captionOption(c *ui.Context, label, id string) {
 }
 func (a *app) queueModal(c *ui.Context) {
 	w, h := c.Size()
-	dialog := ui.Modal(c, &a.showQueue, func() {
+	dialog := frostedModal(c, &a.showQueue, func() {
 		ui.Column(c).Width(min(520, w-80)).Height(min(460, h-120)).Gap(16).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Play queue").FontSize(16).Bold()
@@ -357,13 +426,14 @@ func (a *app) queueModal(c *ui.Context) {
 			})
 		})
 	})
+	enter(dialog)
 	if dialog.Dismissed() {
 		a.layoutHost()
 	}
 }
 func (a *app) onlineModal(c *ui.Context) {
 	w, h := c.Size()
-	dialog := ui.Modal(c, &a.onlineOpen, func() {
+	dialog := frostedModal(c, &a.onlineOpen, func() {
 		ui.Column(c).Width(min(560, w-80)).Height(min(560, h-100)).Gap(14).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Find subtitles").FontSize(16).Bold()
@@ -410,12 +480,13 @@ func (a *app) onlineModal(c *ui.Context) {
 			})
 		})
 	})
+	enter(dialog)
 	if dialog.Dismissed() {
 		a.closeSubtitleSearch()
 	}
 }
 func (a *app) statsModal(c *ui.Context) {
-	dialog := ui.Modal(c, &a.statsOpen, func() {
+	dialog := frostedModal(c, &a.statsOpen, func() {
 		ui.Column(c).Width(360).Gap(16).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Stats for nerds").FontSize(16).Bold()
@@ -427,6 +498,7 @@ func (a *app) statsModal(c *ui.Context) {
 			ui.Text(c, "Decoder: "+a.status.Decoder)
 		})
 	})
+	enter(dialog)
 	if dialog.Dismissed() {
 		a.layoutHost()
 	}
@@ -436,6 +508,22 @@ var speeds = []float64{1, 1.25, 1.5, 2, 0.75}
 
 func (a *app) speed() float64 { return speeds[a.speedIndex] }
 func (a *app) cycleSpeed() {
+	before := a.speed()
 	a.speedIndex = (a.speedIndex + 1) % len(speeds)
+	a.speedDown = a.speed() < before
 	a.send("set_property", "speed", a.speed())
+}
+
+// speedButton rolls its digits to the next speed, down when it wraps to slower.
+func (a *app) speedButton(c *ui.Context) {
+	t := c.Theme()
+	b := ui.ButtonBase(c.Key("speed")).Label("Playback speed").Width(56).Height(36).Center().Radius(8).Background(ui.Transparent).TextColor(t.Text).Transition(colorFade)
+	if b.Hovered() {
+		b.Background(t.SurfaceHover)
+	}
+	press(b, .94)
+	b.Children(func() {
+		ui.Text(c, fmt.Sprintf("%gx", a.speed())).FontFeatures("tnum").SingleLine().ContentTransition(ui.ContentTransition{Numeric: true, Down: a.speedDown})
+	})
+	b.OnClick(a.cycleSpeed)
 }

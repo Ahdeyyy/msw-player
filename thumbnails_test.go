@@ -90,6 +90,7 @@ func TestLargeLibraryThumbnailsRenderAfterLoad(t *testing.T) {
 				t.Fatalf("visible thumbnail %d never loaded", i)
 			}
 		}
+		tt.Advance(200 * time.Millisecond) // let loaded thumbnails finish fading in
 		pixels := tt.Image()
 		red := 0
 		for y := 0; y < pixels.Bounds().Dy(); y++ {

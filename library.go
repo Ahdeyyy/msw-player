@@ -14,7 +14,14 @@ import (
 )
 
 type videoFile struct{ Path, Folder, Name string }
+type libraryRow struct {
+	videoIndex int
+	folder     string
+	count      int
+}
+
 type preferences struct {
+	GroupByFolder    bool                `json:"groupByFolder,omitempty"`
 	Folders          []string            `json:"folders"`
 	Dark             bool                `json:"dark"`
 	Density          string              `json:"density,omitempty"`
@@ -78,7 +85,7 @@ func (a *app) persist() {
 		}
 		auto := a.autoSubtitles
 		style := a.subtitleStyle
-		p := preferences{Folders: append([]string(nil), a.folders...), Dark: a.dark, Density: a.density, History: history, AutoSubtitles: &auto, SubtitleLanguage: a.subtitleLanguage, SubtitleStyle: &style}
+		p := preferences{Folders: append([]string(nil), a.folders...), Dark: a.dark, Density: a.density, History: history, AutoSubtitles: &auto, SubtitleLanguage: a.subtitleLanguage, SubtitleStyle: &style, GroupByFolder: a.groupByFolder}
 		select {
 		case a.store.jobs <- p:
 		default:
@@ -174,6 +181,24 @@ func (a *app) filterLibrary() {
 			continue
 		}
 		a.filtered = append(a.filtered, v)
+	}
+	if a.groupByFolder {
+		sort.SliceStable(a.filtered, func(i, j int) bool {
+			return strings.ToLower(filepath.Dir(a.filtered[i].Path)) < strings.ToLower(filepath.Dir(a.filtered[j].Path))
+		})
+	}
+	a.libraryRows = nil
+	header := -1
+	for i, v := range a.filtered {
+		folder := filepath.Dir(v.Path)
+		if a.groupByFolder {
+			if header < 0 || !strings.EqualFold(a.libraryRows[header].folder, folder) {
+				header = len(a.libraryRows)
+				a.libraryRows = append(a.libraryRows, libraryRow{videoIndex: -1, folder: folder})
+			}
+			a.libraryRows[header].count++
+		}
+		a.libraryRows = append(a.libraryRows, libraryRow{videoIndex: i})
 	}
 }
 func (a *app) addFolder(path string) {
@@ -301,6 +326,10 @@ func (a *app) toggleFullscreen() {
 	a.onlineOpen = false
 	a.statsOpen = false
 	a.fullscreen = !a.fullscreen
+	a.controlsCursorKnown = false
+	if !a.fullscreen {
+		a.hideFullscreenControls()
+	}
 	if a.window != nil {
 		a.window.SetFullScreen(a.fullscreen)
 		a.window.Invalidate()
@@ -309,6 +338,7 @@ func (a *app) toggleFullscreen() {
 }
 func (a *app) exitFullscreen() {
 	a.fullscreen = false
+	a.hideFullscreenControls()
 	if a.window != nil {
 		a.window.SetFullScreen(false)
 		a.window.Invalidate()

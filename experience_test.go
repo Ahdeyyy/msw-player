@@ -108,7 +108,7 @@ func TestSelectionResumeAndTransition(t *testing.T) {
 	if options["start"] != "72.500" || options["pause"] != "yes" {
 		t.Fatal(options)
 	}
-	a.status = playback{Loaded: true, Position: 72.5, Duration: 600}
+	a.status = playback{Loaded: true, FrameReady: true, Position: 72.5, Duration: 600}
 	tt.Advance(600 * time.Millisecond)
 	tt.Frame()
 	if a.transition != nil {
@@ -244,7 +244,7 @@ func TestThumbnailAndResumeIntegration(t *testing.T) {
 		if s.Error != "" {
 			t.Fatal(s.Error)
 		}
-		if s.Loaded && s.Paused && s.Position >= 1.45 {
+		if s.Loaded && s.FrameReady && s.Paused && s.Position >= 1.45 {
 			return
 		}
 		time.Sleep(40 * time.Millisecond)

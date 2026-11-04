@@ -29,6 +29,7 @@ type playback struct {
 	Generation            uint64
 	Position, Duration    float64
 	Paused, Ended, Loaded bool
+	FrameReady            bool
 	Width, Height         int
 	Codec, Decoder        string
 	Error                 string

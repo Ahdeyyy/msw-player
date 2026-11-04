@@ -5,6 +5,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"math"
+	"strings"
 )
 
 type subtitleAppearance struct {
@@ -13,6 +14,7 @@ type subtitleAppearance struct {
 	Color       string  `json:"color"`
 	Outline     float64 `json:"outline"`
 	Shadow      float64 `json:"shadow"`
+	Alignment   string  `json:"alignment"`
 	Position    float64 `json:"position"`
 	Bold        bool    `json:"bold"`
 	Background  bool    `json:"background"`
@@ -22,7 +24,7 @@ type subtitleAppearance struct {
 var subtitleColors = map[string]string{"White": "#ffffff", "Warm white": "#f4ecd8", "Yellow": "#ffe36a", "Cyan": "#9de8ff"}
 
 func defaultSubtitleAppearance() subtitleAppearance {
-	return subtitleAppearance{Font: "Segoe UI", Size: 38, Color: "White", Outline: 1.65, Position: 100}
+	return subtitleAppearance{Font: "Segoe UI", Size: 38, Color: "White", Outline: 1.65, Position: 100, Alignment: "Center"}
 }
 func normalizedSubtitleAppearance(s subtitleAppearance) subtitleAppearance {
 	d := defaultSubtitleAppearance()
@@ -51,6 +53,9 @@ func normalizedSubtitleAppearance(s subtitleAppearance) subtitleAppearance {
 	s.Outline = clamp(s.Outline, 0, 6, d.Outline)
 	s.Shadow = clamp(s.Shadow, 0, 6, d.Shadow)
 	s.Position = clamp(s.Position, 0, 100, d.Position)
+	if s.Alignment != "Left" && s.Alignment != "Right" {
+		s.Alignment = "Center"
+	}
 	return s
 }
 
@@ -67,7 +72,7 @@ func subtitleStyleProperties(s subtitleAppearance) []styleProperty {
 	if s.OverrideASS {
 		override = "force"
 	}
-	return []styleProperty{{"sub-font", s.Font}, {"sub-font-size", s.Size}, {"sub-color", subtitleColors[s.Color]}, {"sub-outline-size", s.Outline}, {"sub-outline-color", "#000000"}, {"sub-shadow-offset", s.Shadow}, {"sub-back-color", "#b3000000"}, {"sub-border-style", border}, {"sub-pos", s.Position}, {"sub-bold", s.Bold}, {"sub-ass-override", override}}
+	return []styleProperty{{"sub-align-x", strings.ToLower(s.Alignment)}, {"sub-font", s.Font}, {"sub-font-size", s.Size}, {"sub-color", subtitleColors[s.Color]}, {"sub-outline-size", s.Outline}, {"sub-outline-color", "#000000"}, {"sub-shadow-offset", s.Shadow}, {"sub-back-color", "#b3000000"}, {"sub-border-style", border}, {"sub-pos", s.Position}, {"sub-bold", s.Bold}, {"sub-ass-override", override}}
 }
 func (a *app) applySubtitleAppearance() {
 	a.subtitleStyle = normalizedSubtitleAppearance(a.subtitleStyle)
@@ -91,6 +96,13 @@ func (a *app) invalidateWindows() {
 	if a.settingsWindow != nil {
 		a.settingsWindow.Invalidate()
 	}
+	// The fullscreen bar and picker show the same state.
+	if a.controlsWindow != nil {
+		a.controlsWindow.Invalidate()
+	}
+	if a.pickerWindow != nil {
+		a.pickerWindow.Invalidate()
+	}
 }
 func (a *app) openSettings() {
 	a.settingsOpen = true
@@ -107,7 +119,15 @@ func (a *app) openSettings() {
 	if a.window == nil {
 		return
 	}
-	a.settingsWindow = mygo.NewWindow(mygo.WindowOptions{Title: "Settings — mswplayr", Width: 720, Height: 760, MinWidth: 600, MinHeight: 440, Parent: a.window, Content: ui.View(a.settingsWindowView), BackgroundColor: "#111111"})
+	work := mygo.Screen.DisplayMatching(a.window.Bounds()).WorkArea
+	width, height := min(720, work.Width-32), min(760, work.Height-32)
+	a.settingsWindow = mygo.NewWindow(mygo.WindowOptions{
+		Title: "Settings — mswplayr", Frameless: true,
+		X: work.X + (work.Width-width)/2, Y: work.Y + (work.Height-height)/2,
+		Width: width, Height: height, MinWidth: min(600, width), MinHeight: min(440, height),
+		Parent: a.window, Content: ui.View(a.settingsWindowView), BackgroundColor: "#111111",
+		Transparent: true, Vibrancy: mygo.VibrancyMica,
+	})
 	a.settingsWindow.OnClosed(func() { a.settingsWindow = nil; a.settingsOpen = false; a.invalidateWindows() })
 	a.settingsWindow.Focus()
 	a.layoutHost()
@@ -123,19 +143,58 @@ func (a *app) closeSettings() {
 func (a *app) openSubtitleAppearance() { a.settingsTarget = "subtitle-appearance"; a.openSettings() }
 func (a *app) settingsWindowView(c *ui.Context) {
 	c.SetTheme(a.theme())
-	c.Root().Background(c.Theme().Background)
+	// Mica tints the window's frame from the wallpaper; the cards stay solid.
+	bg := c.Theme().Background
+	if c.Vibrancy() {
+		bg.A = 209 // 82%
+	}
+	c.Root().Background(bg)
 	c.OnShortcut(0, ui.KeyEscape, a.closeSettings)
 	c.OnShortcut(ui.Ctrl, ui.KeyO, a.browseFolder)
-	ui.Column(c).Fill().Children(func() { a.settingsView(c) })
+	ui.Column(c).Fill().Children(func() {
+		a.settingsTitlebar(c)
+		a.settingsView(c)
+	})
+}
+
+func (a *app) settingsTitlebar(c *ui.Context) {
+	t := c.Theme()
+	bar := ui.Row(c.Key("settings-titlebar")).FillWidth().Height(44).Shrink(0).Padding(0, 12, 0, 20).AlignItems(ui.Center).Gap(9).DragWindow().Children(func() {
+		ui.Icon(c, brandMark).Size(19, 19).TextColor(t.Text)
+		ui.Text(c, "mswplayr — Settings").Bold()
+		ui.Spacer(c)
+		icon(c, "min", "Minimize settings window").OnClick(func() {
+			if a.settingsWindow != nil {
+				a.settingsWindow.Minimize()
+			}
+		})
+		icon(c, "max", "Maximize settings window").OnClick(a.toggleSettingsMaximized)
+		icon(c, "close", "Close settings window").OnClick(a.closeSettings)
+	})
+	if bar.DoubleClicked() {
+		a.toggleSettingsMaximized()
+	}
+}
+
+func (a *app) toggleSettingsMaximized() {
+	if a.settingsWindow == nil {
+		return
+	}
+	if a.settingsWindow.IsMaximized() {
+		a.settingsWindow.Unmaximize()
+	} else {
+		a.settingsWindow.Maximize()
+	}
 }
 func (a *app) settingsFallback(c *ui.Context) {
 	if a.settingsWindow != nil {
 		return
 	}
 	w, h := c.Size()
-	ui.Modal(c, &a.settingsOpen, func() {
+	dialog := frostedModal(c, &a.settingsOpen, func() {
 		ui.Column(c).Width(min(680, w-80)).Height(min(680, h-100)).Children(func() { a.settingsView(c) })
 	})
+	enter(dialog)
 }
 func (a *app) subtitleAppearanceView(c *ui.Context) {
 	t := c.Theme()
@@ -171,6 +230,16 @@ func (a *app) subtitleAppearanceView(c *ui.Context) {
 		slider("Subtitle size", &a.subtitleStyle.Size, 16, 72, 1)
 		slider("Outline", &a.subtitleStyle.Outline, 0, 6, .25)
 		slider("Shadow", &a.subtitleStyle.Shadow, 0, 6, .25)
+		ui.Text(c, "Subtitle position").Bold()
+		ui.Row(c).Gap(8).Children(func() {
+			for _, preset := range []struct {
+				name     string
+				position float64
+			}{{"Top", 0}, {"Middle", 50}, {"Bottom", 100}} {
+				ui.Button(c, preset.name).Label("Place subtitles at " + strings.ToLower(preset.name)).OnClick(func() { a.subtitleStyle.Position = preset.position; a.subtitleAppearanceChanged() })
+			}
+		})
+		ui.Select(c, &a.subtitleStyle.Alignment, []string{"Left", "Center", "Right"}).Label("Horizontal subtitle alignment").Width(200).OnChange(a.subtitleAppearanceChanged)
 		slider("Vertical position", &a.subtitleStyle.Position, 0, 100, 1)
 		ui.Text(c, "Position: 0 is top, 100 is bottom.").FontSize(12).TextColor(t.TextMuted)
 		ui.Row(c).FillWidth().Gap(20).Children(func() {
@@ -178,15 +247,23 @@ func (a *app) subtitleAppearanceView(c *ui.Context) {
 			ui.Checkbox(c, &a.subtitleStyle.Background, "Dark background").OnChange(a.subtitleAppearanceChanged)
 		})
 		ui.Checkbox(c, &a.subtitleStyle.OverrideASS, "Apply to styled ASS/SSA captions").OnChange(a.subtitleAppearanceChanged)
-		ui.Box(c).FillWidth().Height(96).Radius(8).Background(ui.Hex("#080808")).Center().Children(func() {
-			s := a.subtitleStyle
-			text := ui.Text(c, "Subtitle preview").Font(s.Font).FontSize(float32(s.Size/1.5)).TextColor(ui.Hex(subtitleColors[s.Color])).Padding(6, 12)
-			if s.Background {
-				text.Background(ui.Hex("#303030"))
+		ui.Box(c).FillWidth().Height(120).Radius(8).Clip().Background(ui.Hex("#080808")).Children(func() {
+			align := ui.Center
+			if a.subtitleStyle.Alignment == "Left" {
+				align = ui.Start
+			} else if a.subtitleStyle.Alignment == "Right" {
+				align = ui.End
 			}
-			if s.Bold {
-				text.Bold()
-			}
+			ui.Row(c).Absolute().Left(8).Right(8).Top(float32(60 * a.subtitleStyle.Position / 100)).Height(60).AlignItems(ui.Center).Justify(align).Children(func() {
+				s := a.subtitleStyle
+				text := ui.Text(c, "Subtitle preview").Font(s.Font).FontSize(float32(s.Size/1.5)).TextColor(ui.Hex(subtitleColors[s.Color])).Padding(6, 12)
+				if s.Background {
+					text.Background(ui.Hex("#303030"))
+				}
+				if s.Bold {
+					text.Bold()
+				}
+			})
 		})
 		ui.Text(c, "Font and color settings apply to text subtitles.").FontSize(12).TextColor(t.TextMuted)
 	})

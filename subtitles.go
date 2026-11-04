@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type mediaTrack struct {
@@ -82,6 +83,11 @@ func (a *app) openSubtitleSearch() {
 	if a.current < 0 {
 		return
 	}
+	// Fullscreen shows only the video, so the dialog opens in the window.
+	if a.fullscreen {
+		a.dismissFullscreenPicker()
+		a.exitFullscreen()
+	}
 	a.captionsOpen = false
 	if a.subtitleQuery == "" {
 		a.subtitleQuery = videoSearchTitle(a.queue[a.current])
@@ -99,6 +105,7 @@ func (a *app) chooseSubtitle(id string) {
 	a.online.Message = ""
 	a.online.Error = ""
 	a.subtitleID = id
+	a.pendingSubtitle.set(id, time.Now())
 	value := any("no")
 	if n, err := strconv.Atoi(id); err == nil {
 		value = n
@@ -129,6 +136,7 @@ func (a *app) loadSubtitle() {
 				a.online.PendingTitle = ""
 				a.online.Message = "Local subtitle selected."
 				a.online.Error = ""
+				a.pendingSubtitle = optimistic{} // mpv names the new track
 				a.send("sub-add", paths[0], "select")
 				a.captionsOpen = false
 				a.onlineOpen = false

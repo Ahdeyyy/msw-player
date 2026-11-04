@@ -63,6 +63,12 @@ This version targets Windows x64. Folder sources, appearance, density, and per-v
 
 Positions are checkpointed every ten seconds during playback and on pause, navigation, video changes, and normal exit. Finished videos restart from the beginning. Thumbnails are stored in the `thumbnails` subdirectory of the settings directory. Scans and settings writes run in background workers. Removing a source changes the library only. The playback queue lasts for the session.
 
+Windows always draws mpv's native video window above the MyGo UI. Dialogs therefore hide the video while open. The caption and audio menus keep it playing: the video window's region is cut away under the open menu, so the menu shows through. That gap shows the dark viewport, not the video, so the menu's glass frosts black.
+
+### Future work
+
+- **Frosted track menus over live video.** Show the windowed caption and audio menus in an owned acrylic window, as fullscreen already does (`layoutFullscreenPicker`), so the system blurs the playing video behind them. This replaces the region cut in `layoutHost`. It needs the window placed against its trigger in screen coordinates, kept in place as the main window moves or resizes, and dismissed when the main window loses focus.
+
 ## Verification
 
 ```powershell

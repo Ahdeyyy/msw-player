@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -26,6 +27,14 @@ type app struct {
 	pollEngine                                      atomic.Pointer[player]
 	hostGeometry                                    [4]int
 	hostVisible                                     bool
+	hostBehind                                      bool
+	hostHole                                        [4]int
+	menuHole                                        ui.Rect
+	controlsWindow                                  *mygo.Window
+	controlsVisible                                 bool
+	controlsUntil                                   time.Time
+	controlsCursor                                  nativePoint
+	controlsCursorKnown                             bool
 	queueList                                       ui.ListState
 	page                                            string
 	fullscreen, captionsOpen, onlineOpen, statsOpen bool
@@ -33,6 +42,21 @@ type app struct {
 	library, filtered                               []videoFile
 	folderFilter, search                            string
 	libraryList                                     ui.ListState
+	libraryScroll                                   ui.ScrollState
+	queuedPath                                      string
+	queuedAt                                        time.Time
+	speedDown                                       bool
+	groupByFolder                                   bool
+	libraryRows                                     []libraryRow
+	pickerWindow                                    *mygo.Window
+	pickerVisible                                   bool
+	pickerKind                                      string
+	pickerContent                                   ui.Handle
+	pickerSize                                      ui.Rect
+	pickerSerial, pickerMeasured, pickerReady       uint64
+	pickerOpened                                    time.Time
+	pendingSubtitle, pendingAudio, pendingChapter   optimistic
+	seekHeld                                        time.Time
 	scanning                                        bool
 	scanGeneration                                  uint64
 	scanCancel                                      func()
@@ -69,6 +93,58 @@ type app struct {
 func newApp() *app {
 	return &app{current: -1, volume: 80, page: "library", subtitleID: "no", subtitleLanguage: "English", autoSubtitles: true, subtitleStyle: defaultSubtitleAppearance(), density: "Comfortable", history: map[string]bookmark{}, thumbs: map[string]*thumbnail{}, done: make(chan struct{})}
 }
+
+// optimistic shows a choice the user just made until mpv reports it, so a
+// snapshot taken before mpv applied it does not flip the menu back to the
+// old value for a tick. A choice mpv never confirms gives way after a while.
+type optimistic struct {
+	value string
+	until time.Time
+}
+
+const optimisticHold = 1500 * time.Millisecond
+
+func (o *optimistic) set(value string, now time.Time) {
+	o.value, o.until = value, now.Add(optimisticHold)
+}
+
+// resolve returns what to show given what mpv reported.
+func (o *optimistic) resolve(reported string, now time.Time) string {
+	if o.value == "" {
+		return reported
+	}
+	if reported == o.value || now.After(o.until) {
+		*o = optimistic{}
+		return reported
+	}
+	return o.value
+}
+
+// applyStatus takes a playback snapshot, keeping the choices still on their
+// way to mpv and the seek bar the user is dragging.
+func (a *app) applyStatus(s playback) {
+	now := time.Now()
+	a.status = s
+	a.status.AudioID = a.pendingAudio.resolve(s.AudioID, now)
+	if chapter, err := strconv.Atoi(a.pendingChapter.resolve(strconv.Itoa(s.Chapter), now)); err == nil {
+		a.status.Chapter = chapter
+	}
+	sid := s.SubtitleID
+	if sid == "" {
+		sid = "no"
+	}
+	a.subtitleID = a.pendingSubtitle.resolve(sid, now)
+	if now.After(a.seekHeld) {
+		a.seek = s.Position
+	}
+	if a.controlsWindow != nil {
+		a.controlsWindow.Invalidate()
+	}
+	if a.pickerWindow != nil {
+		a.pickerWindow.Invalidate()
+	}
+}
+
 func (a *app) send(args ...any) {
 	if a.engine != nil {
 		a.engine.command(args...)
@@ -115,9 +191,13 @@ func (a *app) play(index int) {
 	}
 	a.status = playback{}
 	a.subtitleID = "no"
+	// Choices made for the last video must not hold onto this one.
+	a.pendingSubtitle, a.pendingAudio, a.pendingChapter = optimistic{}, optimistic{}, optimistic{}
+	a.seekHeld = time.Time{}
 	a.engine.prepareLoad()
 	a.minPlaybackGeneration = a.engine.snapshot().Generation
 	start := a.resumePosition(a.queue[index])
+	a.seek = start
 	a.engine.command("loadfile", a.queue[index], "replace", -1, map[string]string{"start": fmt.Sprintf("%.3f", start), "pause": boolOption(a.transition != nil)})
 	if a.transition == nil {
 		a.engine.command("set_property", "pause", false)
@@ -174,6 +254,7 @@ func main() {
 		a.libraryNotice = "Settings could not be read: " + err.Error()
 	}
 	a.folders, a.dark = prefs.Folders, prefs.Dark
+	a.groupByFolder = prefs.GroupByFolder
 	if prefs.Density == "Compact" || prefs.Density == "Spacious" {
 		a.density = prefs.Density
 	}
@@ -197,10 +278,23 @@ func main() {
 		a.host = makeHost(a.window.NativeHandle())
 		a.startThumbnailWorker()
 		a.window.OnResize(a.layoutHost)
-		a.window.OnEnterFullScreen(func() { a.fullscreen = true; a.window.Invalidate(); a.layoutHost() })
-		a.window.OnLeaveFullScreen(func() { a.fullscreen = false; a.window.Invalidate(); a.layoutHost() })
+		// The track menus are popovers in the window and separate windows in
+		// fullscreen: one open across the change would show in the wrong place.
+		a.window.OnEnterFullScreen(func() {
+			a.fullscreen, a.captionsOpen, a.audioOpen = true, false, false
+			a.window.Invalidate()
+			a.layoutHost()
+		})
+		a.window.OnLeaveFullScreen(func() {
+			a.fullscreen = false
+			a.dismissFullscreenPicker()
+			a.hideFullscreenControls()
+			a.window.Invalidate()
+			a.layoutHost()
+		})
 		a.window.OnFileDrop(func(e *mygo.FileDropEvent) { a.importPaths(e.Paths) })
 		a.window.OnClosed(func() {
+			a.closeFullscreenControls()
 			a.closeSettings()
 			a.cancelSubtitleJob()
 			a.checkpoint(true)
@@ -219,7 +313,7 @@ func main() {
 			}
 		})
 		go func() {
-			ticker := time.NewTicker(250 * time.Millisecond)
+			ticker := time.NewTicker(80 * time.Millisecond)
 			defer ticker.Stop()
 			var last playback
 			var previous *player
@@ -228,6 +322,7 @@ func main() {
 				case <-a.done:
 					return
 				case <-ticker.C:
+					a.window.Update(a.tickFullscreenControls)
 					engine := a.pollEngine.Load()
 					if engine == nil {
 						continue
@@ -241,15 +336,10 @@ func main() {
 						if a.engine != engine || s.Generation < a.minPlaybackGeneration {
 							return
 						}
-						a.status = s
+						a.applyStatus(s)
 						a.drainPlayerInput(engine)
 						a.subtitleTick()
-						a.seek = s.Position
 						a.checkpoint(false)
-						a.subtitleID = s.SubtitleID
-						if a.subtitleID == "" {
-							a.subtitleID = "no"
-						}
 						if s.Error != "" {
 							a.notice = s.Error
 						}

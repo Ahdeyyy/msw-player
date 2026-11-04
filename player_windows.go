@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Microsoft/go-winio"
+	"github.com/egoist/mygo/ui"
 	"net"
 	"os"
 	"os/exec"
@@ -52,6 +53,7 @@ func (p *player) prepareLoad() {
 	defer p.mu.Unlock()
 	p.state.Generation++
 	p.state.Loaded = false
+	p.state.FrameReady = false
 	p.state.Ended = false
 	p.state.Position = 0
 	p.state.Error = ""
@@ -176,6 +178,12 @@ func (p *player) event(data []byte) {
 		p.state.Error = "This video could not be played. Check that the file is readable and complete."
 		p.state.Loaded = false
 	}
+	if e.Event == "start-file" || e.Event == "seek" {
+		p.state.FrameReady = false
+	}
+	if e.Event == "playback-restart" && p.state.Loaded {
+		p.state.FrameReady = true
+	}
 	if e.Event == "file-loaded" {
 		p.state.Loaded = true
 		p.state.Error = ""
@@ -224,6 +232,44 @@ var showWindow = user32.NewProc("ShowWindow")
 var getClient = user32.NewProc("GetClientRect")
 var getDPI = user32.NewProc("GetDpiForWindow")
 
+var gdi32 = syscall.NewLazyDLL("gdi32.dll")
+var createRoundRectRgn = gdi32.NewProc("CreateRoundRectRgn")
+var combineRgn = gdi32.NewProc("CombineRgn")
+var deleteObject = gdi32.NewProc("DeleteObject")
+
+// menuRadius is a popover's corner radius in DIPs: the theme's 8, plus 2.
+const menuRadius = 10
+
+// menuHole converts a menu's bounds (DIPs, in the window) to the part of the
+// video window it covers (physical pixels, in the video window), or zero.
+func menuHole(menu ui.Rect, geometry [4]int, scale float64) [4]int {
+	if menu.W <= 0 || menu.H <= 0 {
+		return [4]int{}
+	}
+	x0, y0 := int(float64(menu.X)*scale)-geometry[0], int(float64(menu.Y)*scale)-geometry[1]
+	x1, y1 := int(float64(menu.X+menu.W)*scale+.999)-geometry[0], int(float64(menu.Y+menu.H)*scale+.999)-geometry[1]
+	x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, geometry[2]), min(y1, geometry[3])
+	if x1 <= x0 || y1 <= y0 {
+		return [4]int{}
+	}
+	return [4]int{x0, y0, x1 - x0, y1 - y0}
+}
+
+// cutMenuHole records where the open caption or audio menu is, from the
+// last frame's layout, and cuts the video away under it when it moves.
+func (a *app) cutMenuHole(menus ...ui.Element) {
+	var hole ui.Rect
+	for _, m := range menus {
+		if m != (ui.Element{}) {
+			hole = m.Bounds()
+		}
+	}
+	if hole != a.menuHole {
+		a.menuHole = hole
+		a.layoutHost()
+	}
+}
+
 func makeHost(parent uintptr) uintptr {
 	class, _ := syscall.UTF16PtrFromString("STATIC")
 	h, _, _ := createWindow.Call(0, uintptr(unsafe.Pointer(class)), 0, 0x40000000|0x04000000|0x02000000, 0, 0, 1, 1, parent, 0, 0, 0)
@@ -233,7 +279,9 @@ func (a *app) layoutHost() {
 	if a.window == nil || a.host == 0 {
 		return
 	}
-	if !a.status.Loaded || a.notice != "" || a.page != "player" || a.transition != nil || (!a.fullscreen && (a.showQueue || a.captionsOpen || a.onlineOpen || a.statsOpen || a.audioOpen || a.chaptersOpen)) {
+	// Dialogs hide the video. The caption and audio menus keep it playing:
+	// the video window is cut away under the menu instead (cutMenuHole).
+	if !a.status.Loaded || a.notice != "" || a.page != "player" || (!a.fullscreen && (a.showQueue || a.onlineOpen || a.statsOpen || a.chaptersOpen)) {
 		if a.hostVisible {
 			showWindow.Call(a.host, 0)
 			a.hostVisible = false
@@ -250,21 +298,43 @@ func (a *app) layoutHost() {
 	}
 	px := func(v float64) uintptr { return uintptr(max(1, int(v*s))) }
 	geometry := videoGeometry(int(r.Right), int(r.Bottom), s, a.fullscreen)
-	if geometry == a.hostGeometry && a.hostVisible {
+	behind := a.transition != nil
+	var hole [4]int
+	if !a.fullscreen && (a.captionsOpen || a.audioOpen) {
+		hole = menuHole(a.menuHole, geometry, s)
+	}
+	if geometry == a.hostGeometry && a.hostVisible && a.hostBehind == behind && hole == a.hostHole {
 		return
 	}
 	a.hostGeometry = geometry
+	a.hostBehind = behind
+	a.hostHole = hole
 	moveWindow.Call(a.host, uintptr(geometry[0]), uintptr(geometry[1]), uintptr(geometry[2]), uintptr(geometry[3]), 1)
 	if a.fullscreen {
 		user32.NewProc("SetWindowRgn").Call(a.host, 0, 1)
 	} else {
-		region, _, _ := syscall.NewLazyDLL("gdi32.dll").NewProc("CreateRoundRectRgn").Call(0, 0, uintptr(geometry[2]+1), uintptr(geometry[3]+1), px(24), px(24))
+		region, _, _ := createRoundRectRgn.Call(0, 0, uintptr(geometry[2]+1), uintptr(geometry[3]+1), px(24), px(24))
+		if region != 0 && hole[2] > 0 {
+			// TODO: the cut shows MyGo's dark viewport under the menu, so its
+			// glass frosts black, not the video. A follow-up should show these
+			// menus in an owned acrylic window, as fullscreen does
+			// (layoutFullscreenPicker), so the system blurs the live video.
+			cut, _, _ := createRoundRectRgn.Call(uintptr(hole[0]), uintptr(hole[1]), uintptr(hole[0]+hole[2]+1), uintptr(hole[1]+hole[3]+1), px(2*menuRadius), px(2*menuRadius))
+			if cut != 0 {
+				combineRgn.Call(region, region, cut, 4) // RGN_DIFF
+				deleteObject.Call(cut)
+			}
+		}
 		if region != 0 {
-			user32.NewProc("SetWindowRgn").Call(a.host, region, 1)
+			user32.NewProc("SetWindowRgn").Call(a.host, region, 1) // the window owns region now
 		}
 	}
 	showWindow.Call(a.host, 5)
 	a.hostVisible = true
-	// MyGo owns a sibling rendering surface. Keep the video host above it.
-	setWindowPos.Call(a.host, 0, 0, 0, 0, 0, 0x0001|0x0002|0x0010)
+	// Render paused video behind MyGo during the morph, then reveal its ready frame.
+	order := uintptr(0)
+	if behind {
+		order = 1
+	} // HWND_BOTTOM
+	setWindowPos.Call(a.host, order, 0, 0, 0, 0, 0x0001|0x0002|0x0010)
 }
