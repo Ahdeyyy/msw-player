@@ -22,7 +22,7 @@ type app struct {
 	showQueue, dark                                 bool
 	volume, seek                                    float64
 	notice                                          string
-	host                                            uintptr
+	host, hostParent                                uintptr
 	done                                            chan struct{}
 	pollEngine                                      atomic.Pointer[player]
 	hostGeometry                                    [4]int
@@ -88,6 +88,8 @@ type app struct {
 	subtitleStyle                                   subtitleAppearance
 	appliedSubtitleStyle                            subtitleAppearance
 	styleApplied                                    bool
+	pip, pipVisible                                 bool
+	pipWindow                                       *mygo.Window
 }
 
 func newApp() *app {
@@ -143,6 +145,9 @@ func (a *app) applyStatus(s playback) {
 	if a.pickerWindow != nil {
 		a.pickerWindow.Invalidate()
 	}
+	if a.pipWindow != nil {
+		a.pipWindow.Invalidate()
+	}
 }
 
 func (a *app) send(args ...any) {
@@ -175,6 +180,7 @@ func (a *app) play(index int) {
 	a.cancelSubtitleJob()
 	a.online = subtitleDownloadState{}
 	a.current = index
+	a.pip = false
 	a.subtitleQuery = videoSearchTitle(a.queue[index])
 	a.page = "player"
 	a.showQueue = false
@@ -207,6 +213,17 @@ func (a *app) play(index int) {
 	a.styleApplied = false
 	a.applySubtitleAppearance()
 	a.layoutHost()
+}
+
+// advance plays the next queued video where the last one played, so a video
+// in picture-in-picture is followed by the next one there.
+func (a *app) advance() {
+	pip := a.pip && a.page != "player"
+	a.play(a.current + 1)
+	if pip {
+		a.pip, a.page = true, "library"
+		a.layoutHost()
+	}
 }
 func (a *app) add(paths []string) {
 	first := len(a.queue)
@@ -276,6 +293,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a.window = mygo.NewWindow(mygo.WindowOptions{Title: "mswplayr", Width: 1120, Height: 760, MinWidth: 760, MinHeight: 540, StateKey: "main", Frameless: true, BackgroundColor: "#f1f3f8", Content: ui.View(a.view)})
 		a.host = makeHost(a.window.NativeHandle())
+		a.hostParent = a.window.NativeHandle()
 		a.startThumbnailWorker()
 		a.window.OnResize(a.layoutHost)
 		// The track menus are popovers in the window and separate windows in
@@ -296,6 +314,9 @@ func main() {
 		a.window.OnClosed(func() {
 			a.closeFullscreenControls()
 			a.closeSettings()
+			if a.pipWindow != nil {
+				a.pipWindow.Close()
+			}
 			a.cancelSubtitleJob()
 			a.checkpoint(true)
 			close(a.done)
@@ -344,7 +365,7 @@ func main() {
 							a.notice = s.Error
 						}
 						if s.Ended && a.current+1 < len(a.queue) {
-							a.play(a.current + 1)
+							a.advance()
 						}
 						a.layoutHost()
 					})

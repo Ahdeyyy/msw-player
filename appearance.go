@@ -79,6 +79,8 @@ var icons = func() map[string]*ui.SVG {
 		"next":         `<path d="M19 5v14M5 5l11 7-11 7Z"/>`,
 		"volume":       `<path d="m11 5-6 4H2v6h3l6 4ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>`,
 		"expand":       `<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>`,
+		"pip":          `<rect x="3" y="5" width="18" height="14" rx="2"/><rect x="12" y="12" width="6" height="4" rx="1" fill="currentColor"/>`,
+		"pip-exit":     `<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 9h-5v5m0-5 6 6"/>`,
 		"moon":         `<path d="M21 13a9 9 0 0 1-10-10 9 9 0 1 0 10 10Z"/>`,
 		"close":        `<path d="m6 6 12 12M6 18 18 6"/>`,
 		"check":        `<path d="m5 12.5 4.5 4.5L19 7.5"/>`,

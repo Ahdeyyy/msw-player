@@ -135,9 +135,17 @@ func (a *app) chapterModal(c *ui.Context) {
 func (a *app) handlePlayerInput(action string) {
 	switch action {
 	case "fullscreen":
-		a.toggleFullscreen()
+		if a.pip && a.page != "player" {
+			a.showPlayer()
+		} else {
+			a.toggleFullscreen()
+		}
 	case "exit-fullscreen":
-		a.exitFullscreen()
+		if a.pip && a.page != "player" {
+			a.closePip()
+		} else {
+			a.exitFullscreen()
+		}
 	case "pause":
 		a.toggle()
 	case "back":

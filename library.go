@@ -297,8 +297,16 @@ func (a *app) playLibrary(index int) {
 }
 func (a *app) navigate(page string) {
 	a.checkpoint(true)
+	// A playing video keeps playing in picture-in-picture.
 	if a.page == "player" && page != "player" {
-		a.send("set_property", "pause", true)
+		if a.playing() {
+			a.pip = true
+		} else if !a.pip {
+			a.send("set_property", "pause", true)
+		}
+	}
+	if page == "player" {
+		a.pip = false
 	}
 	a.transition = nil
 	a.page = page
@@ -319,6 +327,7 @@ func (a *app) toggleFullscreen() {
 		a.send("set_property", "pause", false)
 	}
 	a.page = "player"
+	a.pip = false
 	a.showQueue = false
 	a.captionsOpen = false
 	a.audioOpen = false

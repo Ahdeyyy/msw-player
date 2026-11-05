@@ -357,6 +357,7 @@ func (a *app) playbackControls(c *ui.Context) {
 			audio := a.audioMenu(c)
 			captions := a.captionMenu(c)
 			a.cutMenuHole(audio, captions)
+			icon(c, "pip", "Picture in picture").Disabled(!a.status.Loaded).OnClick(a.togglePip)
 			icon(c, "expand", "Fullscreen").Disabled(!a.status.Loaded).OnClick(a.toggleFullscreen)
 		})
 	})

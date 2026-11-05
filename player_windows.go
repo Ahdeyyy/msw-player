@@ -279,6 +279,12 @@ func (a *app) layoutHost() {
 	if a.window == nil || a.host == 0 {
 		return
 	}
+	if a.pip && a.page != "player" && !a.fullscreen {
+		a.layoutPip()
+		return
+	}
+	a.adoptHost(a.window.NativeHandle())
+	a.hidePip()
 	// Dialogs hide the video. The caption and audio menus keep it playing:
 	// the video window is cut away under the menu instead (cutMenuHole).
 	if !a.status.Loaded || a.notice != "" || a.page != "player" || (!a.fullscreen && (a.showQueue || a.onlineOpen || a.statsOpen || a.chaptersOpen)) {
